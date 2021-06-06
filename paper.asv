@@ -1,0 +1,182 @@
+clear;clc;close all;
+path('toolbox',path);
+path('skeleton',path);
+path('PhenotypicTrait',path);
+path('segment',path);
+path('Evaluate',path);
+warning('off');
+tic;
+IdName='1';
+filename=['testdata\' IdName '\'];
+DebugShow=false;
+%************ user parameter***********************************
+Parameters.KnnNum=16; %%%% k parameter for skeleton 
+Parameters.t2=0.2;
+Parameters.alpha=0.8;%%% alpha parameter for stem 
+Parameters.K1=5;%%%% K1 for fine segmentation 
+Parameters.K2=Parameters.K1;
+Parameters.beta=1.0;%%%%% beta for fine segmentation
+Parameters.sigma=0.2; %%%%% sigma for fine segmentation
+isWrite=0;%%%%% write the parameter into file  / false:read
+Parameters=SerializeParameter(Parameters,IdName,isWrite);
+%************1 Skeleton Extraction*****************************************
+%%%% default parameter from paper(Cao et al 2010) 
+sampleScale=0.02;
+t1 = 0.1; % for inner branch nodes
+a1 = pi*5.0/7.0; % for inner branch nodes, 
+t2 = Parameters.t2;    
+t3 = 30; % for small cycles;
+[P.pts,trueRegions]=loadSegmentFile2(filename); 
+eg_skeleton_laplacian_rosa;
+eg_refine_skeleton;
+%**************************************************************************
+
+
+%************* 2 Coarse segmentation based on skeleton*********************
+[joints ,roots, branches]=find_Joints_mt(P.spls, P.spls_adj,P.pts, false); 
+[sub_skeletons,P.spls]=SkeletonDecomposition(P.spls, joints,roots, P.spls_adj,false);
+[Phi_O,Phi_U]=CoaseSegBySkeleton(P.pts,P.corresp,sub_skeletons,joints,3,false);
+%%%% transform global coordinate axis to plant coordinate axis
+[PA_Pts,PA_Spls]= ConstructPlantAxis(P.pts,P.spls,Phi_U,sub_skeletons);
+
+%%%%% stem constraint 
+[PA_StopX,PA_StartX]= FindLeafStopZ(sub_skeletons,joints,PA_Spls);  
+[Phi_S,Phi_U]=StemSegment(PA_Pts,Phi_U,PA_StartX,Parameters.alpha,DebugShow);
+Phi_O{end+1}=Phi_S;
+PA_StopX(end+1)=-inf;
+PA_StopX=flip(PA_StopX);
+Phi_O=flip(Phi_O);
+%**************************************************************************
+
+%********************3 fine segmentation***********************************
+id=sub_skeletons{end}(1);
+StemBottomPt=PA_Spls(id,:);
+autoRegions=FineSegmentation(PA_Pts,StemBottomPt,Phi_O,Phi_U,Parameters.K1,Parameters.K2,Parameters.beta,Parameters.sigma,DebugShow);
+
+%**************************************************************************
+%return
+%%%%%%%%%%%%%%%%%%%%%%4  refine skeleton %%%%%%%%%%%%%%%%%%%%
+%[OrganSkeleton,newSpls,new_Spls_Adj]=refineSkeleton(autoRegions,PA_Pts,PA_Spls,P.corresp,P.spls_adj,IdName,true);
+
+%return
+toc
+time=toc;
+%******************4 Evaluate**************************
+[Precison,Recall,Micro_F1,Macro_F1,OA,Precisons,Recalls,F1s,RegionsCorresp] = Verification_mt(PA_Pts, trueRegions, autoRegions,length(PA_Pts),IdName,beSaveImg);
+return
+if(isWritePhe==1)
+fid=fopen(['.\result\' IdName '.txt'],'w');
+fprintf(fid,'Precison: %f\r\n',Precison);
+fprintf(fid,'Recall: %f\r\n',Recall);
+fprintf(fid,'Micro_F1: %f\r\n',Micro_F1);
+fprintf(fid,'Macro_F1: %f\r\n',Macro_F1);
+fprintf(fid,'OA: %s\r\n',OA);
+fprintf(fid,'time: %s\r\n',toc);
+ for i=1:length(Precisons)
+   pre= Precisons(i);
+   recall=Recalls(i);
+   f1_score=F1s(i);
+   fprintf(fid,'%d:precsion:%f\r\n',i,pre);
+   fprintf(fid,'%d:recall:%f\r\n',i,recall);
+   fprintf(fid,'%d:f1_score:%f\r\n',i,f1_score);
+ end
+ fprintf(fid,'**********parameters**********\r\n');
+fprintf(fid,'KnnNum: %f\r\n',Parameters.KnnNum);
+fprintf(fid,'t2: %f\r\n',Parameters.t2);
+fprintf(fid,'alpha:  %f\r\n',Parameters.alpha);
+fprintf(fid,'K1:  %f\r\n',Parameters.K1);
+fprintf(fid,'K2:  %f\r\n',Parameters.K2);
+fprintf(fid,'beta:%f\r\n',Parameters.beta);
+fprintf(fid,'sigma:%f\r\n',Parameters.sigma);
+fclose(fid);
+end
+
+
+%return;
+traitfile=[IdName '.txt'];
+%%%%%%%%%%%%%%%%%%%%%%evluate the phenotypic
+for i=1:length(trueRegions)
+   id=RegionsCorresp(i);
+   AutoRegions{i}=autoRegions{id};
+end
+[PlantHeight,PlantWidth,OrganSkeletons]=PhenotypicTrait(PA_Pts,AutoRegions,traitfile,DebugShow);
+
+%return;
+str=['total time=' num2str(toc)];
+disp(str);
+str=['Precison=' num2str(Precison)];
+disp(str);
+str=['Recall=' num2str(Recall)];
+disp(str);
+str=['Macro_F1=' num2str(Macro_F1)];
+disp(str);
+str=['Micro_F1=' num2str(Micro_F1)];
+disp(str);
+str=['OA=' num2str(OA)];
+disp(str);
+
+return;
+if(isWritePhe)
+fid=fopen('.\f1_score.txt','a');
+for i=1:length(Precisons)
+   f1_score=F1s(i);
+   f1=(i-1)/(length(F1s)-1);
+   fprintf(fid,'%f %f\r\n',f1,f1_score);
+ end
+fclose(fid);
+
+fid=fopen('.\precison.txt','a');
+for i=1:length(Precisons)
+   f1_score=Precisons(i);
+   f1=(i-1)/(length(Precisons)-1);
+   fprintf(fid,'%f %f\r\n',f1,f1_score);
+ end
+fclose(fid);
+
+fid=fopen('.\recall.txt','a');
+for i=1:length(Recalls)
+   f1_score=Recalls(i);
+   f1=(i-1)/(length(Recalls)-1);
+   fprintf(fid,'%f %f\r\n',f1,f1_score);
+ end
+fclose(fid);
+
+fid=fopen('.\Plant_Phenotypic.txt','a');
+fprintf(fid,'%s %f %f %f %f %f %f %f %f %f %f\r\n',IdName,length(PA_Pts),length(Recalls)-1,PlantHeight,PlantWidth,Macro_F1,Micro_F1,Precison,Recall,OA,time);
+fclose(fid);
+end
+% fid=fopen('.\Plant_Precisons.txt','a');
+% for i=1:length(Recalls)
+%    fprintf(fid,'%f %f %f %f %f\r\n',length(Recalls)-1,PlantHeight,PlantWidth,Macro_F1,Micro_F1);
+%  end
+% fclose(fid);
+
+if(isWritePhe==1)
+fid=fopen(['.\result\' IdName '.txt'],'w');
+fprintf(fid,'Precison: %f\r\n',Precison);
+fprintf(fid,'Recall: %f\r\n',Recall);
+fprintf(fid,'Micro_F1: %f\r\n',Micro_F1);
+fprintf(fid,'Macro_F1: %f\r\n',Macro_F1);
+fprintf(fid,'OA: %s\r\n',OA);
+fprintf(fid,'time: %s\r\n',toc);
+ for i=1:length(Precisons)
+   pre= Precisons(i);
+   recall=Recalls(i);
+   f1_score=F1s(i);
+   fprintf(fid,'%d:precsion:%f\r\n',i,pre);
+   fprintf(fid,'%d:recall:%f\r\n',i,recall);
+   fprintf(fid,'%d:f1_score:%f\r\n',i,f1_score);
+ end
+ fprintf(fid,'**********parameters**********\r\n');
+fprintf(fid,'KnnNum: %f\r\n',Parameters.KnnNum);
+fprintf(fid,'t2: %f\r\n',Parameters.t2);
+fprintf(fid,'alpha:  %f\r\n',Parameters.alpha);
+fprintf(fid,'K1:  %f\r\n',Parameters.K1);
+fprintf(fid,'K2:  %f\r\n',Parameters.K2);
+fprintf(fid,'beta:%f\r\n',Parameters.beta);
+fprintf(fid,'sigma:%f\r\n',Parameters.sigma);
+fclose(fid);
+end
+%******************
+% traitfile='traits.txt';
+% PhenotypicTrait(PA_Pts,autoRegions,traitfile,DebugShow);
